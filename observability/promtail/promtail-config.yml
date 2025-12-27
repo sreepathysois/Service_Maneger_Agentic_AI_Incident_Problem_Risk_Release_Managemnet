@@ -1,0 +1,42 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: docker
+          __path__: /var/lib/docker/containers/*/*.log
+
+    pipeline_stages:
+      # 1️⃣ Parse Docker JSON envelope
+      - json:
+          expressions:
+            log: log
+
+      # 2️⃣ Set log line to actual app log
+      - output:
+          source: log
+
+      # 3️⃣ Parse application JSON log
+      - json:
+          expressions:
+            service: service
+            event: event
+            endpoint: endpoint
+            error_code: error_code
+
+      # 4️⃣ Promote ONLY low-cardinality fields
+      - labels:
+          service:
+          event:
+

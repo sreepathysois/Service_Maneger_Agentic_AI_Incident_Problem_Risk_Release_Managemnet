@@ -1,0 +1,16 @@
+global:
+  resolve_timeout: 1m
+
+route:
+  receiver: "incident-agent"
+  group_by: ["alertname", "service"]
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 2m
+
+receivers:
+  - name: "incident-agent"
+    webhook_configs:
+      - url: "http://incident-agent:5000/alert"
+        send_resolved: false
+

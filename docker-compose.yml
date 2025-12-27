@@ -1,0 +1,182 @@
+version: "3.9"
+
+services:
+  # ---------------- ITSM ----------------
+  openproject:
+    image: openproject/openproject:13
+    container_name: openproject
+    ports:
+      - "8080:80"
+    environment:
+      OPENPROJECT_SECRET_KEY_BASE: secret
+      OPENPROJECT_HOST__NAME: localhost:8080
+      OPENPROJECT_HTTPS: "false"
+      DATABASE_URL: postgres://openproject:openproject@op-db/openproject
+    depends_on:
+      - op-db
+
+  op-db:
+    image: postgres:14
+    container_name: openproject-db
+    environment:
+      POSTGRES_USER: openproject
+      POSTGRES_PASSWORD: openproject
+      POSTGRES_DB: openproject
+    volumes:
+      - op-db-data:/var/lib/postgresql/data
+
+  # ---------------- CHATOPS ----------------
+  mattermost:
+    image: mattermost/mattermost-team-edition:latest
+    container_name: mattermost
+    depends_on:
+      - mm-db
+    ports:
+      - "8065:8065"
+    environment:
+      MM_SQLSETTINGS_DRIVERNAME: postgres
+      MM_SQLSETTINGS_DATASOURCE: postgres://mmuser:mmpass@mm-db:5432/mattermost?sslmode=disable
+      MM_SERVICESETTINGS_SITEURL: http://localhost:8065
+    volumes:
+      - mm-data:/mattermost/data
+  
+  mm-db:
+    image: postgres:14
+    container_name: mattermost-db
+    environment:
+      POSTGRES_USER: mmuser
+      POSTGRES_PASSWORD: mmpass
+      POSTGRES_DB: mattermost
+    volumes:
+      - mm-db-data:/var/lib/postgresql/data
+
+  # ---------------- OBSERVABILITY ----------------
+  prometheus:
+    image: prom/prometheus
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./observability/prometheus/rules:/etc/prometheus/rules
+    ports:
+      - "9090:9090"
+    depends_on:
+      - ecommerce
+  
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: alertmanager
+    volumes:
+      - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+    ports:
+      - "9093:9093"
+    depends_on:
+      - prometheus
+
+
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: loki
+    user: "0"   # run as root (safe for PoC)
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./observability/loki/loki-config.yml:/etc/loki/loki-config.yml
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+
+  promtail:
+    image: grafana/promtail:2.9.0
+    container_name: promtail
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./observability/promtail/promtail-config.yml:/etc/promtail/promtail.yml
+    command: -config.file=/etc/promtail/promtail.yml
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+
+  # ---------------- AI AGENT ----------------
+  incident-agent:
+    build:
+      context: ./agents/incident-agent
+    #image: python:3.11-slim
+    container_name: incident-agent
+    working_dir: /app
+    volumes:
+      - ./agents/incident-agent:/app
+    env_file:
+      - .env
+    command: python incident_agent.py
+    ports:
+      - "5000:5000"
+    depends_on:
+      - alertmanager
+      - openproject
+      - mattermost
+
+
+  remediation-agent:
+    build:
+      context: ./agents/remediation-agent
+    #image: python:3.11-slim
+    container_name: remediation-agent
+    working_dir: /app
+    volumes:
+      - ./agents/remediation-agent:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    env_file:
+      - .env
+    command: python app.py
+    ports:
+      - "7000:7000"
+    depends_on:
+      - openproject
+      - mattermost
+
+  rca-agent:
+    build: ./agents/rca-agent
+    container_name: rca-agent
+    working_dir: /app
+    volumes:
+      - ./agents/rca-agent:/app
+    env_file:
+      - .env
+    command: python app.py
+    ports:
+      - "6000:6000"
+    environment:
+      - LOKI_URL=http://loki:3100
+      - OPENPROJECT_URL=http://openproject/api/v3
+      - OPENPROJECT_API_TOKEN=${OPENPROJECT_API_TOKEN}
+      - MATTERMOST_WEBHOOK_URL=${MATTERMOST_WEBHOOK_URL}
+    depends_on:
+      - loki
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  ecommerce:
+    build:
+      context: ./ecommerce
+    container_name: ecommerce-app
+    ports:
+      - "8000:8000"
+    environment:
+      - FAIL_PAYMENTS=false
+
+
+volumes:
+  op-db-data:
+  mm-data:
+  loki-data:
+  mm-db-data:

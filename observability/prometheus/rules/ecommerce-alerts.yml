@@ -1,0 +1,32 @@
+groups:
+  - name: ecommerce-alerts
+
+    rules:
+      # -----------------------------
+      # Orders Traffic Alert (P3)
+      # -----------------------------
+      - alert: HighOrderPageVisits
+        expr: increase(http_requests_total{endpoint="/orders"}[1m]) >= 5
+        for: 10s
+        labels:
+          severity: warning
+          service: ecommerce
+          environment: prod
+        annotations:
+          summary: "High traffic on Orders page"
+          description: "Orders page received 5 or more visits in the last minute"
+
+      # -----------------------------
+      # Payment Failure Alert (P1)
+      # -----------------------------
+      - alert: PaymentFailureHigh
+        expr: rate(payment_failures_total[1m]) > 0.1
+        for: 10s
+        labels:
+          severity: critical
+          service: payment
+          environment: prod
+        annotations:
+          summary: "P1 Payment Failure – Ecommerce"
+          description: "Payment failures exceeded threshold"
+
