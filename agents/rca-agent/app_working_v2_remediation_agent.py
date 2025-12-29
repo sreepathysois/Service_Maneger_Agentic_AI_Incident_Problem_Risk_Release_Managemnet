@@ -14,10 +14,10 @@ OPENPROJECT_URL = os.getenv("OPENPROJECT_URL", "http://openproject/api/v3")
 OPENPROJECT_API_TOKEN = os.getenv("OPENPROJECT_API_TOKEN")
 MATTERMOST_WEBHOOK_URL = os.getenv("MATTERMOST_WEBHOOK_URL")
 
-# 🧠 Decision Agent (LangGraph)
-DECISION_AGENT_URL = os.getenv(
-    "DECISION_AGENT_URL",
-    "http://decision-agent:9000/decide"
+# 🔁 Remediation Agent
+REMEDIATION_AGENT_URL = os.getenv(
+    "REMEDIATION_AGENT_URL",
+    "http://remediation-agent:7000/remediate"
 )
 
 # -----------------------------
@@ -83,26 +83,29 @@ def determine_root_cause(service: str) -> str:
     return "No clear root cause identified from logs."
 
 # -----------------------------
-# OpenProject Helpers
+# OpenProject Update (LOCK SAFE)
 # -----------------------------
-def get_work_package(incident_id: int):
-    resp = requests.get(
+def update_incident_with_rca(incident_id: int, rca: str):
+    wp = requests.get(
         f"{OPENPROJECT_URL}/work_packages/{incident_id}",
         headers=HEADERS,
         timeout=10
     )
-    resp.raise_for_status()
-    return resp.json()
+    wp.raise_for_status()
 
-def update_work_package_description(incident_id: int, new_block: str):
-    wp = get_work_package(incident_id)
-    lock_version = wp.get("lockVersion", 0)
-    existing_desc = wp.get("description", {}).get("raw", "")
+    work_package = wp.json()
+    lock_version = work_package.get("lockVersion", 0)
+    existing_desc = work_package.get("description", {}).get("raw", "")
 
     payload = {
         "lockVersion": lock_version,
         "description": {
-            "raw": f"{existing_desc}\n\n---\n\n{new_block}"
+            "raw": (
+                f"{existing_desc}\n\n"
+                f"---\n\n"
+                f"### 🧠 Root Cause Analysis\n"
+                f"{rca}"
+            )
         }
     }
 
@@ -113,23 +116,35 @@ def update_work_package_description(incident_id: int, new_block: str):
         timeout=10
     ).raise_for_status()
 
-def close_incident(incident_id: int):
-    wp = get_work_package(incident_id)
-    lock_version = wp.get("lockVersion", 0)
+# -----------------------------
+# Remediation Trigger
+# -----------------------------
+def trigger_remediation(
+    incident_id: int,
+    service: str,
+    rca: str,
+    severity: str
+):
+    try:
+        resp = requests.post(
+            REMEDIATION_AGENT_URL,
+            json={
+                "incident_id": incident_id,
+                "service": service,
+                "root_cause": rca,
+                "severity": severity
+            },
+            timeout=5
+        )
 
-    payload = {
-        "lockVersion": lock_version,
-        "_links": {
-            "status": {"href": "/api/v3/statuses/5"}  # Closed
-        }
-    }
+        if resp.status_code == 200:
+            result = resp.json()
+            return result
 
-    requests.patch(
-        f"{OPENPROJECT_URL}/work_packages/{incident_id}",
-        headers=HEADERS,
-        json=payload,
-        timeout=10
-    ).raise_for_status()
+        return {"status": "skipped"}
+
+    except Exception as e:
+        return {"status": "failed", "error": str(e)}
 
 # -----------------------------
 # Mattermost Notify
@@ -155,81 +170,36 @@ def run_rca():
         incident_id = data["incident_id"]
         service = data["service"]
         severity = data.get("severity", "P3")
-        problem_id = data.get("problem_id")
+        summary = data.get("summary", "")
 
-        # 1️⃣ RCA
+        # 1️⃣ Run RCA
         rca = determine_root_cause(service)
 
-        update_work_package_description(
-            incident_id,
-            f"### 🧠 Root Cause Analysis\n{rca}"
+        # 2️⃣ Update Incident
+        update_incident_with_rca(incident_id, rca)
+
+        # 3️⃣ Trigger Remediation
+        remediation_result = trigger_remediation(
+            incident_id=incident_id,
+            service=service,
+            rca=rca,
+            severity=severity
         )
 
-        # 🔔 RCA ALERT (THIS WAS MISSING)
+        # 4️⃣ Notify
         notify_mattermost(
             f"🧠 **RCA Completed**\n"
             f"• Incident ID: {incident_id}\n"
-            f"• Service: {service}\n\n"
-            f"Root Cause:\n{rca}"
+            f"• Service: {service}\n"
+            f"• Root Cause:\n{rca}\n\n"
+            f"🛠 Remediation Status: {remediation_result.get('status')}"
         )
-
-        # 2️⃣ Decision Agent
-        decision_resp = requests.post(
-            DECISION_AGENT_URL,
-            json={
-                "incident_id": incident_id,
-                "service": service,
-                "severity": severity,
-                "root_cause": rca,
-                "problem_id": problem_id
-            },
-            timeout=10
-        )
-        decision_resp.raise_for_status()
-        decision_payload = decision_resp.json()
-
-        decision = decision_payload.get("decision", "NO_ACTION")
-        confidence = decision_payload.get("confidence", 0)
-        actions = decision_payload.get("recommended_actions", [])
-        reason = decision_payload.get("reason", "")
-
-        # 3️⃣ Notify Decision
-        notify_mattermost(
-            f"🤖 **Decision Agent Verdict**\n"
-            f"• Decision: {decision}\n"
-            f"• Confidence: {confidence}\n"
-            f"• Recommended Actions: {', '.join(actions) if actions else 'None'}\n\n"
-            f"Reason:\n{reason}"
-        )
-
-        # 4️⃣ Dummy Remediation
-        remediation_status = "skipped"
-        if decision == "AUTO_REMEDIATE":
-            time.sleep(2)
-            remediation_status = "success"
-
-            update_work_package_description(
-                incident_id,
-                "### 🛠 Remediation Executed\n"
-                "Dummy remediation completed successfully.\n"
-                "Service assumed to be stabilized."
-            )
-
-            close_incident(incident_id)
-
-            notify_mattermost(
-                f"🛠 **Remediation Executed**\n"
-                f"• Incident ID: {incident_id}\n"
-                f"• Status: SUCCESS\n\n"
-                f"✅ Incident Closed Automatically"
-            )
 
         return jsonify({
             "status": "completed",
             "incident_id": incident_id,
-            "decision": decision,
-            "confidence": confidence,
-            "remediation": remediation_status
+            "root_cause": rca,
+            "remediation": remediation_result
         })
 
     except Exception as e:
