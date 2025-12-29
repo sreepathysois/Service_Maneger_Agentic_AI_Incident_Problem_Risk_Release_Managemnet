@@ -122,6 +122,24 @@ services:
       - openproject
       - mattermost
 
+  decision-agent:
+    build: ./agents/decision-agent
+    container_name: decision-agent
+    working_dir: /app
+    volumes:
+      - ./agents/decision-agent:/app
+    env_file:
+      - .env
+    command: python app.py
+    ports:
+      - "9000:9000"
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL}
+    depends_on:
+      - incident-agent
+      - rca-agent
+
 
   remediation-agent:
     build:
