@@ -339,18 +339,11 @@ Alert states
 
 ## 🏁 Conclusion
 
-This is a production-style Agentic AIOps platform:
-
+**This is a production-style Agentic AIOps platform:**
+```bash
 ✔ ITIL aligned
 ✔ Noise reduction
 ✔ RCA automation
 ✔ LLM-driven decisions
 ✔ Self-healing capable
-
-Ideal for:
-
-SRE / Platform Engineering portfolios
-
-AIOps research
-
-Interview demonstrations
+```
